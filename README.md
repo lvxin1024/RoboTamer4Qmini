@@ -20,6 +20,17 @@ Shandong University, China<br>
 **Website**: www.vsislab.com  
 **Contact**: info@vsislab.com
 
+## Isaac Lab backend
+
+An independent Isaac Lab backend is available under `isaaclab/` and
+`scripts/isaaclab/`. It preserves the legacy policy's `12`-action and
+`129`-observation interface while moving simulation, URDF conversion, contact
+sensing, and environment lifecycle management to Isaac Lab.
+
+See [docs/isaaclab.md](docs/isaaclab.md) for installation, smoke-test, training,
+playback, checkpoint compatibility, and the current parity matrix. The original
+Isaac Gym Preview 3 workflow below remains available and is unchanged.
+
 ## Features
 - **Advanced Control Algorithms**: Implements PPO algorithm using Isaac Gym for stable and efficient locomotion control.<br>
 - **Modular Design**: Easy-to-use API for customizing robot models, environments, and reward functions.<br>

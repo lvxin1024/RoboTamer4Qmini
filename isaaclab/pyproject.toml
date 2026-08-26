@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robo-tamer-isaaclab"
+version = "0.1.0"
+description = "Isaac Lab backend for RoboTamer4Qmini"
+requires-python = ">=3.10"
+dependencies = ["gymnasium>=0.29"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["robo_tamer_isaaclab*"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["__pycache__/*", "*.pyc"]
