@@ -1,5 +1,7 @@
 """Configuration for the Isaac Lab Qmini environment."""
 
+import math
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
@@ -10,7 +12,7 @@ from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, ImuCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.converters import UrdfConverterCfg
 from isaaclab.terrains import TerrainImporterCfg
@@ -19,6 +21,33 @@ from isaaclab.utils import configclass
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 QMINI_URDF = str(REPOSITORY_ROOT / "assets" / "q1" / "urdf" / "q1.urdf")
+
+
+def _imu_offset_from_urdf() -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+    """Read the fixed GY-91 frame from the URDF as position and wxyz quaternion."""
+    root = ET.parse(QMINI_URDF).getroot()
+    joint = root.find("./joint[@name='imu_in_torso_joint']")
+    if joint is None or joint.get("type") != "fixed":
+        raise ValueError("q1.urdf must define imu_in_torso_joint as a fixed joint")
+    origin = joint.find("origin")
+    if origin is None:
+        raise ValueError("imu_in_torso_joint must define an origin")
+
+    pos = tuple(float(value) for value in origin.get("xyz", "0 0 0").split())
+    roll, pitch, yaw = (float(value) for value in origin.get("rpy", "0 0 0").split())
+    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+    rot = (
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    )
+    return pos, rot
+
+
+IMU_POS, IMU_ROT = _imu_offset_from_urdf()
 
 
 @configclass
@@ -139,7 +168,9 @@ class QminiEnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.UrdfFileCfg(
             asset_path=QMINI_URDF,
             fix_base=False,
-            merge_fixed_joints=False,
+            # The GY-91 is massless and rigidly mounted. Its visual is merged
+            # into base_link while the native IMU uses the URDF-derived offset.
+            merge_fixed_joints=True,
             self_collision=True,
             joint_drive=UrdfConverterCfg.JointDriveCfg(
                 target_type="none",
@@ -195,6 +226,14 @@ class QminiEnvCfg(DirectRLEnvCfg):
         update_period=0.0,
         history_length=3,
         track_air_time=True,
+    )
+    # Isaac Lab recommends an offset from an existing rigid body instead of a
+    # small-mass fixed body. The offset is loaded from the URDF fixed joint.
+    imu: ImuCfg = ImuCfg(
+        prim_path="/World/envs/env_.*/Robot/base_link",
+        offset=ImuCfg.OffsetCfg(pos=IMU_POS, rot=IMU_ROT),
+        update_period=0.0,
+        history_length=0,
     )
 
     events: EventCfg = EventCfg()

@@ -98,7 +98,7 @@ Run without `--headless` to use the Isaac Sim viewer:
 | Friction, mass, inertia randomization | Implemented | Material and mass events; inertia is recomputed from mass. |
 | Delayed observations | Pending parity | The actor shape is preserved, but delay queues are not enabled yet. |
 | Rough terrain curriculum | Pending parity | The initial task uses `TerrainImporterCfg` with a plane. |
-| IMU fixed-link state | Pending parity | The first port uses root-link state. |
+| IMU fixed-link state | Implemented | A native Isaac Lab IMU uses the `imu_in_torso_joint` URDF origin as an offset from `base_link`; the massless fixed visual is merged into the base during conversion. |
 | Exact legacy reward curve | Pending parity | Reward terms were reduced to a stable training baseline. |
 
 Do not compare final rewards between backends until the pending parity items are

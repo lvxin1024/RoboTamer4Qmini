@@ -10,7 +10,7 @@ import torch
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
-from isaaclab.sensors import ContactSensor
+from isaaclab.sensors import ContactSensor, Imu
 from isaaclab.utils.math import euler_xyz_from_quat, quat_from_euler_xyz
 
 from .qmini_env_cfg import QminiEnvCfg
@@ -95,6 +95,8 @@ class QminiEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self._robot
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
         self.scene.sensors["contact_sensor"] = self._contact_sensor
+        self._imu_sensor = Imu(self.cfg.imu)
+        self.scene.sensors["imu"] = self._imu_sensor
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -176,10 +178,14 @@ class QminiEnv(DirectRLEnv):
     def _compute_policy_observation(self) -> torch.Tensor:
         joint_pos = self._robot.data.joint_pos[:, self._joint_ids]
         joint_vel = self._robot.data.joint_vel[:, self._joint_ids]
-        root_quat = self._robot.data.root_quat_w
-        roll, pitch, _ = euler_xyz_from_quat(root_quat)
+        # Read the native IMU using the fixed-joint offset parsed from the URDF.
+        # The visual-only mesh transform does not alter the sensor axes.
+        imu_pos_w = self._imu_sensor.data.pos_w
+        imu_quat_w = self._imu_sensor.data.quat_w
+        base_ang_vel = self._imu_sensor.data.ang_vel_b
+        self._imu_pos_w = imu_pos_w
+        roll, pitch, _ = euler_xyz_from_quat(imu_quat_w)
         base_rp = torch.stack((self._wrap_angle(roll), self._wrap_angle(pitch)), dim=-1)
-        base_ang_vel = self._robot.data.root_ang_vel_b
         joint_error = self._joint_targets - joint_pos
 
         static = (torch.linalg.vector_norm(self._commands, dim=1, keepdim=True) >= 0.15).float()

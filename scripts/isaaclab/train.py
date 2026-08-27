@@ -7,6 +7,7 @@ import json
 import statistics
 import sys
 import time
+import traceback
 from collections import deque
 from pathlib import Path
 
@@ -38,7 +39,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from model import load_actor, load_critic
-from rl import PPO
+from rl.alg import PPO
 from robo_tamer_isaaclab.tasks.direct.qmini import QminiEnv, QminiEnvCfg
 
 
@@ -126,6 +127,11 @@ def main():
     obs_dict, _ = env.reset(seed=ARGS.seed)
     obs = obs_dict["policy"]
     total_time = 0.0
+    print(
+        f"Starting PPO at iteration {start_iteration}; target={ARGS.max_iterations}, "
+        f"steps_per_env={ARGS.steps_per_env}",
+        flush=True,
+    )
 
     try:
         for iteration in range(start_iteration, ARGS.max_iterations):
@@ -193,5 +199,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except BaseException:
+        traceback.print_exc()
+        raise
     finally:
         SIMULATION_APP.close()

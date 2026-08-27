@@ -80,7 +80,8 @@ class PPO:
 
     def compute_returns(self, cri_obs):
         cri_obs = cri_obs.to(torch.float32)
-        last_values = self.critic(cri_obs).detach()
+        with torch.no_grad():
+            last_values = self.critic(cri_obs)
         self.storage.compute_returns(last_values, self.gamma, self.gae_lambda)
 
     def update(self):
