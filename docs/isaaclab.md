@@ -1,8 +1,8 @@
 # Isaac Lab backend
 
 This repository keeps the original Isaac Gym Preview 3 backend and adds an
-independent Isaac Lab backend. The port targets the public Isaac Lab API at
-release `v2.3.2`, commit `37ddf626871758333d6ed89cf64ad702aef127d0`.
+independent Isaac Lab backend. The parity port is tested with Isaac Lab `2.2.1`
+and Isaac Sim `5.0`.
 
 ## What is implemented
 
@@ -12,9 +12,14 @@ release `v2.3.2`, commit `37ddf626871758333d6ed89cf64ad702aef127d0`.
   two phase frequencies and ten incremental joint targets
 - the original 43-dimensional policy feature layout with three-frame stacking
   (`129` actor observations)
+- the original asymmetric critic layout with three-frame stacking
+  (`381` privileged critic observations)
 - explicit legacy-style PD torque control and URDF effort limits
 - foot contact sensing, fall/contact termination, gait phase features, command
-  sampling, random pushes, gain/torque randomization, and observation noise
+  sampling, random pushes, gain/torque randomization, observation noise, and
+  1 ms observation-delay queues
+- the complete BIRL reward composition, including per-term clipping, and the
+  rough random-height terrain distribution used by the legacy configuration
 - PPO training with the repository's existing actor, critic, rollout storage,
   and optimizer
 - task registration includes an RSL-RL PPO configuration for standard Isaac
@@ -50,6 +55,7 @@ conversion during the first launch, so that launch is slower.
   --headless \
   --num_envs 64 \
   --max_iterations 2 \
+  --validate \
   --name smoke_isaaclab
 ```
 
@@ -75,6 +81,10 @@ Outputs are written below `experiments/<name>/isaaclab/`. Resume with:
   --name qmini_isaaclab
 ```
 
+Parity checkpoints use a `381`-input critic. Older Isaac Lab baseline
+checkpoints used a `129`-input critic and cannot be resumed as full PPO
+checkpoints; their actor weights can still be loaded separately for evaluation.
+
 ## Play
 
 Run without `--headless` to use the Isaac Sim viewer:
@@ -93,17 +103,18 @@ Run without `--headless` to use the Isaac Sim viewer:
 | URDF and joint order | Implemented | Ten actuated joints are asserted at startup. |
 | Actor action/observation shape | Implemented | `12` actions and `129` stacked observations. |
 | PPO training and checkpointing | Implemented | Uses the existing RoboTamer PPO implementation. |
-| Contact and gait rewards | Implemented | Consolidated for the initial Isaac Lab baseline. |
-| Push, gain, torque, observation randomization | Implemented | Per-environment tensor randomization. |
+| Contact and gait rewards | Implemented | All weighted BIRL terms and legacy per-term clipping are present. |
+| Asymmetric critic | Implemented | `127` privileged features are stacked to `381`; the actor remains `129`. |
+| Push, gain, torque, observation randomization | Implemented | Legacy ranges and update intervals are preserved. |
 | Friction, mass, inertia randomization | Implemented | Material and mass events; inertia is recomputed from mass. |
-| Delayed observations | Pending parity | The actor shape is preserved, but delay queues are not enabled yet. |
-| Rough terrain curriculum | Pending parity | The initial task uses `TerrainImporterCfg` with a plane. |
+| Delayed observations | Implemented | Joint, angle, and rate queues run at the 1 ms physics rate. |
+| Rough terrain curriculum | Implemented | Random-height terrain matches the legacy 0-4 cm distribution; curriculum remains disabled by default, as in `main`. |
 | IMU fixed-link state | Implemented | A native Isaac Lab IMU uses the `imu_in_torso_joint` URDF origin as an offset from `base_link`; the massless fixed visual is merged into the base during conversion. |
-| Exact legacy reward curve | Pending parity | Reward terms were reduced to a stable training baseline. |
+| Legacy reward curve | Implemented | Formula and weight parity; raw contact magnitudes still differ between physics engines. |
 
-Do not compare final rewards between backends until the pending parity items are
-implemented. First compare startup pose, joint order, contact labels, command
-tracking, base height, termination rate, and per-term reward magnitudes.
+Isaac Gym and Isaac Lab use different PhysX integrations, so identical reward
+numbers are not expected. Compare command tracking, base height, termination
+rate, foot behavior, and per-term reward trends instead of raw totals alone.
 
 ## Cloud instance guidance
 

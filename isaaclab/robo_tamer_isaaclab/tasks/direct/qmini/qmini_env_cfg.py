@@ -4,7 +4,10 @@ import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import torch
+
 import isaaclab.sim as sim_utils
+import isaaclab.terrains as terrain_gen
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
 import isaaclab.envs.mdp as mdp
@@ -12,7 +15,7 @@ from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, ImuCfg
+from isaaclab.sensors import ContactSensorCfg, ImuCfg, RayCasterCfg, patterns
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.converters import UrdfConverterCfg
 from isaaclab.terrains import TerrainImporterCfg
@@ -50,6 +53,44 @@ def _imu_offset_from_urdf() -> tuple[tuple[float, float, float], tuple[float, fl
 IMU_POS, IMU_ROT = _imu_offset_from_urdf()
 
 
+QMINI_TERRAINS_CFG = terrain_gen.TerrainGeneratorCfg(
+    # Isaac Lab combines all sub-terrains into one PhysX mesh. The legacy
+    # 20x20 grid of 15 m tiles exceeds practical mesh-cooking limits, so use
+    # Isaac Lab's stable grid density with the same height distribution.
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_rows=10,
+    num_cols=20,
+    horizontal_scale=0.1,
+    vertical_scale=0.01,
+    slope_threshold=0.75,
+    curriculum=False,
+    use_cache=False,
+    sub_terrains={
+        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=1.0,
+            noise_range=(0.0, 0.04),
+            noise_step=0.01,
+            downsampled_scale=0.1,
+        ),
+    },
+)
+
+
+def randomize_joint_damping(
+    env, env_ids: torch.Tensor | None, asset_cfg: SceneEntityCfg, scale_range: tuple[float, float]
+):
+    """Scale the imported URDF joint damping once per simulated robot."""
+    asset = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=asset.device)
+    scales = scale_range[0] + (scale_range[1] - scale_range[0]) * torch.rand(
+        len(env_ids), asset.num_joints, device=asset.device
+    )
+    damping = asset.data.default_joint_damping[env_ids] * scales
+    asset.write_joint_damping_to_sim(damping, env_ids=env_ids)
+
+
 @configclass
 class CommandCfg:
     """Velocity command sampling."""
@@ -57,6 +98,7 @@ class CommandCfg:
     resampling_time_s: float = 5.0
     lin_vel_x: tuple[float, float] = (-0.3, 0.7)
     yaw_vel: tuple[float, float] = (-1.0, 1.0)
+    static_envs: int = 96
 
 
 @configclass
@@ -69,25 +111,56 @@ class DomainRandomizationCfg:
     push_interval_s: float = 3.0
     max_push_linear_velocity: float = 0.5
     max_push_angular_velocity: float = 0.5
+    push_curriculum_control_steps: int = 72_000
     observation_noise: bool = True
+    delay_observation: bool = True
+    joint_delay_steps: tuple[int, int] = (10, 40)
+    rate_delay_steps: tuple[int, int] = (20, 50)
+    angle_delay_steps: tuple[int, int] = (20, 50)
+    delay_resample_control_steps: int = 200
+    noise_resample_physics_steps: int = 5
+    joint_pos_noise: float = 0.1
+    joint_vel_noise: float = 1.2
+    angle_noise: float = 0.15
+    angular_velocity_noise: float = 0.3
+    linear_acceleration_noise: float = 3.0
 
 
 @configclass
 class RewardCfg:
-    """Weights for the first Isaac Lab parity target."""
+    """Legacy BIRL reward weights and per-term clipping."""
 
-    alive: float = 0.3
-    track_linear_velocity: float = 2.3
-    track_yaw_velocity: float = 2.5
-    upright: float = 1.5
+    constant: float = 0.3
     base_height: float = 1.0
+    balance: float = 1.5
+    forward_velocity: float = 2.3
+    yaw_rate: float = 2.5
+    lateral_velocity: float = 0.7
     vertical_velocity: float = 0.6
-    gait_contact: float = 0.7
-    foot_clearance: float = 0.5
-    foot_slip: float = -0.15
-    action_rate: float = -0.02
-    joint_velocity: float = -0.0005
-    torque: float = -0.00002
+    angular_velocity: float = 0.6
+    twist: float = 2.5
+    base_acceleration: float = 0.1
+    foot_clearance: float = 1.0
+    foot_support: float = 0.7
+    foot_height: float = 0.7
+    leg_width: float = 0.5
+    action_constraint: float = 0.2
+    stand_action_constraint: float = 0.1
+    foot_phase: float = 0.3
+    joint_position_error: float = 0.2
+    action_smoothness: float = 1.5
+    network_smoothness: float = 0.001
+    network_output: float = 0.0001
+    foot_slip: float = 0.5
+    foot_vertical_velocity: float = 0.2
+    foot_acceleration: float = 0.05
+    foot_soft_contact: float = 2.7
+    joint_velocity: float = 0.003
+    foot_orientation: float = 0.5
+    foot_contact_force: float = 0.001
+    joint_torque: float = 0.001
+    phase_modulator: float = 0.03
+    term_clip: tuple[float, float] = (-4.0, 5.0)
 
 
 @configclass
@@ -105,11 +178,23 @@ class EventCfg:
             "num_buckets": 64,
         },
     )
-    body_mass_and_inertia = EventTerm(
+    base_mass_and_inertia = EventTerm(
         func=mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+            "mass_distribution_params": (0.4, 1.7),
+            "operation": "scale",
+            "recompute_inertia": True,
+        },
+    )
+    leg_mass_and_inertia = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names="hip_.*|knee_.*|ankle_.*"
+            ),
             "mass_distribution_params": (0.5, 1.5),
             "operation": "scale",
             "recompute_inertia": True,
@@ -122,6 +207,14 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
             "friction_distribution_params": (0.8, 1.2),
             "operation": "scale",
+        },
+    )
+    joint_damping = EventTerm(
+        func=randomize_joint_damping,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "scale_range": (0.8, 1.2),
         },
     )
 
@@ -137,7 +230,8 @@ class QminiEnvCfg(DirectRLEnvCfg):
     action_space = 12
     # 43 policy features stacked across three control steps.
     observation_space = 129
-    state_space = 0
+    # 127 privileged critic features stacked across three control steps.
+    state_space = 381
 
     sim: SimulationCfg = SimulationCfg(
         dt=0.001,
@@ -151,7 +245,9 @@ class QminiEnvCfg(DirectRLEnvCfg):
     )
     terrain: TerrainImporterCfg = TerrainImporterCfg(
         prim_path="/World/ground",
-        terrain_type="plane",
+        terrain_type="generator",
+        terrain_generator=QMINI_TERRAINS_CFG,
+        max_init_terrain_level=9,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -234,6 +330,24 @@ class QminiEnvCfg(DirectRLEnvCfg):
         offset=ImuCfg.OffsetCfg(pos=IMU_POS, rot=IMU_ROT),
         update_period=0.0,
         history_length=0,
+    )
+    left_foot_height: RayCasterCfg = RayCasterCfg(
+        prim_path="/World/envs/env_.*/Robot/ankle_pitch_l",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.01, size=(0.01, 0.01)),
+        mesh_prim_paths=["/World/ground"],
+        update_period=0.0,
+        debug_vis=False,
+    )
+    right_foot_height: RayCasterCfg = RayCasterCfg(
+        prim_path="/World/envs/env_.*/Robot/ankle_pitch_r",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.01, size=(0.01, 0.01)),
+        mesh_prim_paths=["/World/ground"],
+        update_period=0.0,
+        debug_vis=False,
     )
 
     events: EventCfg = EventCfg()

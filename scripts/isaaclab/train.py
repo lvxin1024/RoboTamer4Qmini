@@ -23,6 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save_interval", type=int, default=200)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Fail immediately if actions, observations, critic states, or rewards become non-finite.",
+    )
     AppLauncher.add_app_launcher_args(parser)
     return parser
 
@@ -65,6 +70,7 @@ def main():
         "task": "RoboTamer-Qmini-Direct-v0",
         "num_envs": ARGS.num_envs,
         "policy_observations": 129,
+        "critic_observations": 381,
         "actions": 12,
         "seed": ARGS.seed,
     }
@@ -79,7 +85,7 @@ def main():
     }
     critic_cfg = {
         "name": "simple_policy",
-        "num_critic_obs": 129,
+        "num_critic_obs": 381,
         "hidden_layers": (512, 256),
         "activation": "relu",
     }
@@ -105,7 +111,7 @@ def main():
     algorithm.init_storage(
         ARGS.num_envs,
         ARGS.steps_per_env,
-        [129],
+        [381],
         [129],
         [12],
     )
@@ -126,21 +132,34 @@ def main():
 
     obs_dict, _ = env.reset(seed=ARGS.seed)
     obs = obs_dict["policy"]
+    critic_obs = obs_dict["critic"]
     total_time = 0.0
     print(
         f"Starting PPO at iteration {start_iteration}; target={ARGS.max_iterations}, "
-        f"steps_per_env={ARGS.steps_per_env}",
+        f"steps_per_env={ARGS.steps_per_env}, policy_obs={tuple(obs.shape)}, "
+        f"critic_obs={tuple(critic_obs.shape)}",
         flush=True,
     )
+    last_env_log: dict[str, torch.Tensor] = {}
 
     try:
         for iteration in range(start_iteration, ARGS.max_iterations):
             collection_start = time.perf_counter()
             with torch.inference_mode():
                 for _ in range(ARGS.steps_per_env):
-                    actions = algorithm.act(obs, obs)
-                    next_obs_dict, rewards, terminated, truncated, _ = env.step(actions)
+                    actions = algorithm.act(obs, critic_obs)
+                    next_obs_dict, rewards, terminated, truncated, info = env.step(actions)
                     dones = terminated | truncated
+                    if ARGS.validate:
+                        tensors = {
+                            "actions": actions,
+                            "policy observations": next_obs_dict["policy"],
+                            "critic observations": next_obs_dict["critic"],
+                            "rewards": rewards,
+                        }
+                        for name, value in tensors.items():
+                            if not torch.isfinite(value).all():
+                                raise FloatingPointError(f"Non-finite {name} at iteration {iteration}")
                     algorithm.process_env_step(
                         rewards,
                         dones,
@@ -156,8 +175,10 @@ def main():
                         episode_rewards[reset_ids] = 0.0
                         episode_lengths[reset_ids] = 0.0
                     obs = next_obs_dict["policy"]
+                    critic_obs = next_obs_dict["critic"]
+                    last_env_log = info.get("log", {})
 
-            algorithm.compute_returns(obs)
+            algorithm.compute_returns(critic_obs)
             collection_time = time.perf_counter() - collection_start
             learn_start = time.perf_counter()
             value_loss, surrogate_loss, mean_kl = algorithm.update()
@@ -185,11 +206,14 @@ def main():
             writer.add_scalar("Loss/surrogate", surrogate_loss, iteration)
             writer.add_scalar("Loss/mean_kl", mean_kl, iteration)
             writer.add_scalar("Perf/fps", fps, iteration)
+            for name, value in last_env_log.items():
+                writer.add_scalar(name, value, iteration)
 
             print(
                 f"{ARGS.name}#{iteration}  t={total_time / 60:.1f}m  fps={fps}  "
                 f"reward={mean_reward:.3f}  length={mean_length:.0f}  "
-                f"value={value_loss:.4f}  policy={surrogate_loss:.4f}  kl={mean_kl:.4f}"
+                f"value={value_loss:.4f}  policy={surrogate_loss:.4f}  kl={mean_kl:.4f}",
+                flush=True,
             )
     finally:
         writer.close()
