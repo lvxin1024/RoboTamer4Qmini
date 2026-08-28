@@ -45,6 +45,9 @@ def main():
     cfg = QminiEnvCfg()
     cfg.scene.num_envs = ARGS.num_envs
     cfg.sim.device = ARGS.device
+    # Match training playback to the flat-plane training environment.
+    cfg.terrain.terrain_type = "plane"
+    cfg.terrain.terrain_generator = None
     cfg.domain_randomization.enabled = False
     cfg.domain_randomization.observation_noise = False
     cfg.events = None

@@ -56,6 +56,9 @@ def main():
     cfg.scene.num_envs = ARGS.num_envs
     cfg.sim.device = ARGS.device
     cfg.seed = ARGS.seed
+    # Train on a flat plane; keep the reusable rough-terrain preset in the task config.
+    cfg.terrain.terrain_type = "plane"
+    cfg.terrain.terrain_generator = None
     env = QminiEnv(cfg)
 
     run_dir = REPOSITORY_ROOT / "experiments" / ARGS.name / "isaaclab"
