@@ -142,6 +142,7 @@ class RewardCfg:
     base_acceleration: float = 0.3
     airborne: float = 2.0
     contact_phase: float = 1.0
+    contact_force_threshold: float = 10.0
     foot_clearance: float = 0.6
     foot_support: float = 0.7
     foot_height: float = 0.4

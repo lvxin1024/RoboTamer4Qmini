@@ -389,7 +389,7 @@ class QminiEnv(DirectRLEnv):
             * moving
         )
 
-        support_contact = state["foot_force"] >= 10.0
+        support_contact = state["foot_force"] >= cfg.contact_force_threshold
         clear_contact = state["foot_force"] < 1.0
         support_phase = self._support_mask()
         swing_phase = ~support_phase
@@ -402,9 +402,10 @@ class QminiEnv(DirectRLEnv):
         airborne_reward = -torch.logical_not(
             support_contact.any(dim=1, keepdim=True)
         ).float()
-        contact_phase_reward = -torch.logical_xor(
-            support_contact, support_phase
-        ).float().mean(dim=1, keepdim=True) * moving
+        swapped_support = torch.logical_xor(support_contact, support_phase).all(
+            dim=1, keepdim=True
+        )
+        contact_phase_reward = -swapped_support.float() * moving
 
         foot_height_score = 40.0 * torch.clamp(state["foot_height"], 0.0, 0.05)
         foot_height_reward = torch.clamp(
