@@ -128,7 +128,7 @@ class DomainRandomizationCfg:
 
 @configclass
 class RewardCfg:
-    """Legacy BIRL reward weights and per-term clipping."""
+    """BIRL-derived reward weights and per-term clipping."""
 
     constant: float = 0.3
     base_height: float = 1.0
@@ -136,24 +136,26 @@ class RewardCfg:
     forward_velocity: float = 2.3
     yaw_rate: float = 2.5
     lateral_velocity: float = 0.7
-    vertical_velocity: float = 0.6
-    angular_velocity: float = 0.6
+    vertical_velocity: float = 1.2
+    angular_velocity: float = 1.2
     twist: float = 2.5
-    base_acceleration: float = 0.1
-    foot_clearance: float = 1.0
+    base_acceleration: float = 0.3
+    airborne: float = 2.0
+    contact_phase: float = 1.0
+    foot_clearance: float = 0.6
     foot_support: float = 0.7
-    foot_height: float = 0.7
+    foot_height: float = 0.4
     leg_width: float = 0.5
     action_constraint: float = 0.2
     stand_action_constraint: float = 0.1
-    foot_phase: float = 0.3
+    foot_phase: float = 0.6
     joint_position_error: float = 0.2
     action_smoothness: float = 1.5
     network_smoothness: float = 0.001
     network_output: float = 0.0001
     foot_slip: float = 0.5
     foot_vertical_velocity: float = 0.2
-    foot_acceleration: float = 0.05
+    foot_acceleration: float = 0.1
     foot_soft_contact: float = 2.7
     joint_velocity: float = 0.003
     foot_orientation: float = 0.5

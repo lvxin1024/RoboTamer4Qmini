@@ -13,11 +13,14 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, Imu, RayCaster
 from isaaclab.utils.math import (
     euler_xyz_from_quat,
+    quat_apply,
     quat_apply_inverse,
+    quat_conjugate,
     quat_from_euler_xyz,
+    quat_mul,
 )
 
-from .qmini_env_cfg import QminiEnvCfg
+from .qmini_env_cfg import IMU_ROT, QminiEnvCfg
 
 
 class QminiEnv(DirectRLEnv):
@@ -38,6 +41,9 @@ class QminiEnv(DirectRLEnv):
 
     def __init__(self, cfg: QminiEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        self._q_base_sensor = self._tensor(IMU_ROT).unsqueeze(0).repeat(self.num_envs, 1)
+        self._q_sensor_base = quat_conjugate(self._q_base_sensor)
 
         self._joint_ids, joint_names = self._robot.find_joints(list(self.JOINT_NAMES), preserve_order=True)
         if tuple(joint_names) != self.JOINT_NAMES:
@@ -119,6 +125,25 @@ class QminiEnv(DirectRLEnv):
 
     def _tensor(self, values: Sequence[float]) -> torch.Tensor:
         return torch.tensor(values, dtype=torch.float32, device=self.device)
+
+    def _imu_state_in_base(self):
+        quat_world_sensor = self._imu_sensor.data.quat_w
+
+        # q_world_base = q_world_sensor * inverse(q_base_sensor)
+        quat_world_base = quat_mul(quat_world_sensor, self._q_sensor_base)
+
+        # Sensor-frame vectors -> base_link-frame vectors.
+        lin_vel_base = quat_apply(
+            self._q_base_sensor, self._imu_sensor.data.lin_vel_b
+        )
+        ang_vel_base = quat_apply(
+            self._q_base_sensor, self._imu_sensor.data.ang_vel_b
+        )
+        lin_acc_base = quat_apply(
+            self._q_base_sensor, self._imu_sensor.data.lin_acc_b
+        )
+
+        return quat_world_base, lin_vel_base, ang_vel_base, lin_acc_base
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -374,6 +399,12 @@ class QminiEnv(DirectRLEnv):
         foot_support_reward = (
             torch.logical_and(support_contact, support_phase).float().sum(dim=1, keepdim=True) / 2.0
         ) * moving
+        airborne_reward = -torch.logical_not(
+            support_contact.any(dim=1, keepdim=True)
+        ).float()
+        contact_phase_reward = -torch.logical_xor(
+            support_contact, support_phase
+        ).float().mean(dim=1, keepdim=True) * moving
 
         foot_height_score = 40.0 * torch.clamp(state["foot_height"], 0.0, 0.05)
         foot_height_reward = torch.clamp(
@@ -635,6 +666,8 @@ class QminiEnv(DirectRLEnv):
             "angular_velocity": angular_velocity_reward * cfg.angular_velocity,
             "twist": twist_reward * cfg.twist,
             "base_acceleration": base_acceleration_reward * balance_reward * cfg.base_acceleration,
+            "airborne": airborne_reward * cfg.airborne,
+            "contact_phase": contact_phase_reward * cfg.contact_phase,
             "foot_clearance": foot_clearance_reward * cfg.foot_clearance,
             "foot_support": foot_support_reward * cfg.foot_support,
             "foot_height": foot_height_reward * cfg.foot_height,
@@ -818,7 +851,7 @@ class QminiEnv(DirectRLEnv):
         return torch.linalg.vector_norm(forces, dim=-1).clamp(max=1000.0)
 
     def _legacy_state(self) -> dict[str, torch.Tensor]:
-        imu_quat_w = self._imu_sensor.data.quat_w
+        imu_quat_w, base_lin_vel, base_ang_vel, base_acc = self._imu_state_in_base()
         roll, pitch, yaw = euler_xyz_from_quat(imu_quat_w)
         base_euler = self._wrap_angle(torch.stack((roll, pitch, yaw), dim=-1))
         heading_quat = quat_from_euler_xyz(
@@ -857,9 +890,9 @@ class QminiEnv(DirectRLEnv):
             "base_pos": self._imu_sensor.data.pos_w,
             "base_pos_hd": base_pos_hd,
             "base_euler": base_euler,
-            "base_lin_vel": self._imu_sensor.data.lin_vel_b,
-            "base_ang_vel": self._imu_sensor.data.ang_vel_b,
-            "base_acc": self._imu_sensor.data.lin_acc_b,
+            "base_lin_vel": base_lin_vel,
+            "base_ang_vel": base_ang_vel,
+            "base_acc": base_acc,
             "joint_pos": self._robot.data.joint_pos[:, self._joint_ids],
             "joint_vel": self._robot.data.joint_vel[:, self._joint_ids],
             "joint_torque": self._robot.data.applied_torque[:, self._joint_ids],
@@ -877,16 +910,19 @@ class QminiEnv(DirectRLEnv):
 
         joint_pos = self._robot.data.joint_pos[:, self._joint_ids]
         joint_vel = self._robot.data.joint_vel[:, self._joint_ids]
-        roll, pitch, yaw = euler_xyz_from_quat(self._imu_sensor.data.quat_w)
+        imu_quat_w, _, base_ang_vel, base_acc = self._imu_state_in_base()
+        roll, pitch, yaw = euler_xyz_from_quat(imu_quat_w)
         base_euler = self._wrap_angle(torch.stack((roll, pitch, yaw), dim=-1))
         index = self._delay_history_index
         self._joint_pos_history[:, index] = joint_pos + self._joint_pos_noise
         self._joint_vel_history[:, index] = joint_vel + self._joint_vel_noise
         self._base_euler_history[:, index] = base_euler + self._base_euler_noise
         self._base_ang_vel_history[:, index] = (
-            self._imu_sensor.data.ang_vel_b + self._base_ang_vel_noise
+            base_ang_vel + self._base_ang_vel_noise
         )
-        self._base_acc_history[:, index] = self._imu_sensor.data.lin_acc_b + self._base_acc_noise
+        self._base_acc_history[:, index] = (
+            base_acc + self._base_acc_noise
+        )
         self._delay_history_index = (index + 1) % self._delay_history_length
         self._physics_step_count += 1
 
