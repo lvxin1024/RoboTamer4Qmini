@@ -22,6 +22,8 @@ and Isaac Sim `5.0`.
   rough random-height terrain distribution used by the legacy configuration
 - PPO training with the repository's existing actor, critic, rollout storage,
   and optimizer
+- sagittal mirror symmetry loss for the actor mean, enabled by default during
+  Isaac Lab training
 - task registration includes an RSL-RL PPO configuration for standard Isaac
   Lab tooling
 - evaluation of both newly trained checkpoints and legacy Actor checkpoints
@@ -71,6 +73,12 @@ GPU memory and simulation FPS.
   --max_iterations 5000 \
   --name qmini_isaaclab
 ```
+
+The actor symmetry-loss coefficient defaults to `0.1`. Override it with
+`--symmetry_loss_coef <value>`, or pass `--symmetry_loss_coef 0` to reproduce
+training without this regularizer. The transform mirrors every frame in the
+129-feature observation stack and swaps/sign-corrects the 12 actor outputs;
+it does not force the two legs to occupy the same pose at the same instant.
 
 Outputs are written below `experiments/<name>/isaaclab/`. Resume with:
 

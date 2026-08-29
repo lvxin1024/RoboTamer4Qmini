@@ -1,6 +1,9 @@
 from rl.storage import Transition, RolloutStorage
+from typing import Callable, Optional
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class PPO:
@@ -20,6 +23,9 @@ class PPO:
             eps_clip=0.2,
             use_clipped_value_loss=True,
             schedule="fixed",
+            symmetry_loss_coef=0.0,
+            mirror_observation_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+            mirror_action_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
             device='cpu',
     ):
         self.actor = actor.to(device)
@@ -28,6 +34,15 @@ class PPO:
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.device = device
+        self.symmetry_loss_coef = float(symmetry_loss_coef)
+        self.mirror_observation_fn = mirror_observation_fn
+        self.mirror_action_fn = mirror_action_fn
+        self.last_symmetry_loss = 0.0
+        if self.symmetry_loss_coef < 0.0:
+            raise ValueError("symmetry_loss_coef must be non-negative")
+        if self.symmetry_loss_coef > 0.0 and (
+                self.mirror_observation_fn is None or self.mirror_action_fn is None):
+            raise ValueError("Symmetry loss requires observation and action mirror functions")
 
 
         # PPO components
@@ -85,7 +100,7 @@ class PPO:
         self.storage.compute_returns(last_values, self.gamma, self.gae_lambda)
 
     def update(self):
-        mean_surrogate_loss, mean_value_loss, mean_kl= 0., 0., 0.
+        mean_surrogate_loss, mean_value_loss, mean_kl, mean_symmetry_loss = 0., 0., 0., 0.
         num_updates = self.num_learning_epochs * self.num_mini_batches
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         for obs_batch, cri_obs_batch, actions_batch, target_values_batch, \
@@ -134,8 +149,20 @@ class PPO:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
+            symmetry_loss = torch.zeros((), device=self.device)
+            if self.symmetry_loss_coef > 0.0:
+                mirrored_obs_batch = self.mirror_observation_fn(obs_batch)
+                mirrored_mu_batch = self.actor(mirrored_obs_batch)['dist'].mean
+                expected_mirrored_mu = self.mirror_action_fn(mu_batch)
+                symmetry_loss = F.mse_loss(mirrored_mu_batch, expected_mirrored_mu)
+
             # total loss
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+            loss = (
+                    surrogate_loss
+                    + self.value_loss_coef * value_loss
+                    - self.entropy_coef * entropy_batch.mean()
+                    + self.symmetry_loss_coef * symmetry_loss
+            )
             # Gradient step
             self.optimizer.zero_grad()
             loss.backward()
@@ -144,8 +171,10 @@ class PPO:
 
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
+            mean_symmetry_loss += symmetry_loss.item()
             if self.desired_kl != None and self.schedule == 'adaptive':
                 mean_kl += kl_mean.item()
 
         self.storage.clear()
+        self.last_symmetry_loss = mean_symmetry_loss / num_updates
         return mean_value_loss / num_updates, mean_surrogate_loss / num_updates, mean_kl / num_updates

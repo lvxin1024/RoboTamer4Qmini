@@ -24,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--resume", type=Path)
     parser.add_argument(
+        "--symmetry_loss_coef",
+        type=float,
+        default=0.1,
+        help="Weight for sagittal mirror consistency of the actor mean; set to 0 to disable.",
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="Fail immediately if actions, observations, critic states, or rewards become non-finite.",
@@ -46,6 +52,10 @@ from torch.utils.tensorboard import SummaryWriter
 from model import load_actor, load_critic
 from rl.alg import PPO
 from robo_tamer_isaaclab.tasks.direct.qmini import QminiEnv, QminiEnvCfg
+from robo_tamer_isaaclab.tasks.direct.qmini.symmetry import (
+    mirror_policy_action,
+    mirror_policy_observation,
+)
 
 
 def main():
@@ -76,6 +86,7 @@ def main():
         "critic_observations": 381,
         "actions": 12,
         "seed": ARGS.seed,
+        "symmetry_loss_coef": ARGS.symmetry_loss_coef,
     }
     (run_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
@@ -109,6 +120,9 @@ def main():
         eps_clip=0.2,
         use_clipped_value_loss=True,
         schedule="adaptive",
+        symmetry_loss_coef=ARGS.symmetry_loss_coef,
+        mirror_observation_fn=mirror_policy_observation,
+        mirror_action_fn=mirror_policy_action,
         device=env.device,
     )
     algorithm.init_storage(
@@ -208,6 +222,7 @@ def main():
             writer.add_scalar("Loss/value", value_loss, iteration)
             writer.add_scalar("Loss/surrogate", surrogate_loss, iteration)
             writer.add_scalar("Loss/mean_kl", mean_kl, iteration)
+            writer.add_scalar("Loss/symmetry", algorithm.last_symmetry_loss, iteration)
             writer.add_scalar("Perf/fps", fps, iteration)
             for name, value in last_env_log.items():
                 writer.add_scalar(name, value, iteration)
